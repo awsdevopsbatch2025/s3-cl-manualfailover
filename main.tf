@@ -279,55 +279,10 @@ resource "aws_s3_bucket_replication_configuration" "dr_to_primary" {
 }
 
 #======================================================================================
-# Route 53 Hosted Zone and DR Failover Records - point to CloudFront
+# Manual Failover Control for CloudFront Origin Group
 #======================================================================================
-resource "aws_route53_zone" "main" {
-  name = var.route53_zone_name
-}
 
-resource "aws_route53_health_check" "primary_bucket_health" {
-  fqdn              = aws_cloudfront_distribution.cdn.domain_name
-  port              = 80
-  type              = "HTTP"
-  resource_path     = "/health.txt"
-  failure_threshold = var.health_check_failure_threshold
-  request_interval  = var.health_check_request_interval
-}
 
-resource "aws_route53_record" "primary" {
-  zone_id = aws_route53_zone.main.id
-  name    = var.route53_record_name
-  type    = "A"
-  set_identifier = "primary"
-  failover_routing_policy {
-    type = "PRIMARY"
-  }
-  alias {
-    name                   = aws_cloudfront_distribution.cdn.domain_name
-    zone_id                = aws_cloudfront_distribution.cdn.hosted_zone_id
-    evaluate_target_health = true
-  }
-  health_check_id = aws_route53_health_check.primary_bucket_health.id
-}
-
-resource "aws_route53_record" "dr" {
-  zone_id = aws_route53_zone.main.id
-  name    = var.route53_record_name
-  type    = "A"
-  set_identifier = "dr"
-  failover_routing_policy {
-    type = "SECONDARY"
-  }
-  alias {
-    name                   = aws_cloudfront_distribution.cdn.domain_name
-    zone_id                = aws_cloudfront_distribution.cdn.hosted_zone_id
-    evaluate_target_health = true
-  }
-}
-
-#======================================================================================
-# CloudFront Distribution with OAC and Origin Group Failover
-#======================================================================================
 resource "aws_cloudfront_origin_access_control" "default" {
   name                              = "s3-oac-default"
   origin_access_control_origin_type = "s3"
@@ -357,8 +312,12 @@ resource "aws_cloudfront_distribution" "cdn" {
     failover_criteria {
       status_codes = var.failover_status_codes
     }
-    member { origin_id = "primary-origin" }
-    member { origin_id = "dr-origin" }
+    member {
+      origin_id = var.failover_mode == "primary" ? "primary-origin" : "dr-origin"
+    }
+    member {
+      origin_id = var.failover_mode == "primary" ? "dr-origin" : "primary-origin"
+    }
   }
 
   default_cache_behavior {
@@ -393,117 +352,67 @@ resource "aws_cloudfront_distribution" "cdn" {
 # Variables
 #======================================================================================
 variable "primary_region" {
-  description = "Primary AWS region"
-  type        = string
-  default     = "us-west-1"
+  default = "us-east-1"
 }
 
 variable "dr_region" {
-  description = "Disaster Recovery AWS region"
-  type        = string
-  default     = "us-west-2"
+  default = "us-east-2"
 }
 
 variable "primary_bucket_name" {
-  description = "Primary S3 bucket name"
-  type        = string
-  default     = "app1-static-primary-unique123"
+  default = "app1-static-primary-unique0123"
 }
 
 variable "dr_bucket_name" {
-  description = "DR S3 bucket name"
-  type        = string
-  default     = "app1-static-dr-unique123"
+  default = "app1-static-dr-unique0123"
 }
 
 variable "primary_index_file" {
-  description = "Local file path for Primary index.html"
-  type        = string
-  default     = "primary-index.html"
+  default = "primary-index.html"
 }
 
 variable "dr_index_file" {
-  description = "Local file path for DR index.html"
-  type        = string
-  default     = "dr-index.html"
+  default = "dr-index.html"
 }
 
 variable "health_check_file" {
-  description = "Local file path for health.txt"
-  type        = string
-  default     = "health.txt"
+  default = "health.txt"
 }
 
 variable "dr_storage_class" {
-  description = "Storage class for replicated objects on DR bucket"
-  type        = string
-  default     = "INTELLIGENT_TIERING"
+  default = "INTELLIGENT_TIERING"
 }
 
 variable "primary_storage_class" {
-  description = "Storage class for replicated objects on Primary bucket"
-  type        = string
-  default     = "STANDARD"
-}
-
-variable "route53_zone_name" {
-  description = "Route53 Hosted Zone name"
-  type        = string
-  default     = "poc.com"
-}
-
-variable "route53_record_name" {
-  description = "Route53 record name for assets"
-  type        = string
-  default     = "app1-assets"
-}
-
-variable "health_check_failure_threshold" {
-  description = "Number of health check failures before failover"
-  type        = number
-  default     = 2
-}
-
-variable "health_check_request_interval" {
-  description = "Health check request interval seconds"
-  type        = number
-  default     = 30
+  default = "STANDARD"
 }
 
 variable "failover_status_codes" {
-  description = "Status codes that trigger CloudFront failover"
-  type        = list(number)
-  default     = [403, 404, 500, 502, 503, 504]
+  default = [403, 404, 500, 502, 503, 504]
 }
 
 variable "cloudfront_min_ttl" {
-  description = "CloudFront minimum TTL (seconds)"
-  type        = number
-  default     = 0
+  default = 0
 }
 
 variable "cloudfront_default_ttl" {
-  description = "CloudFront default TTL (seconds)"
-  type        = number
-  default     = 3600
+  default = 3600
 }
 
 variable "cloudfront_max_ttl" {
-  description = "CloudFront max TTL (seconds)"
-  type        = number
-  default     = 86400
+  default = 86400
+}
+
+variable "failover_mode" {
+  description = "Manual failover mode: primary or dr"
+  type        = string
+  default     = "primary"
 }
 
 #======================================================================================
 # Outputs
 #======================================================================================
-
 output "cloudfront_distribution" {
   value       = aws_cloudfront_distribution.cdn.domain_name
   description = "CloudFront distribution domain (CDN endpoint)"
-}
-
-output "route53_dns_url" {
-  value       = "https://${aws_route53_record.primary.name}.${var.route53_zone_name}"
-  description = "Full failover DNS URL"
 }
